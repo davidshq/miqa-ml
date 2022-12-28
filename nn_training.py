@@ -55,15 +55,16 @@ def index_of_abs_max(my_list):
 
 
 def get_image_dimension(path, print_non_lps=False):
+    # Read image file
     image_io = itk.ImageIOFactory.CreateImageIO(path, itk.CommonEnums.IOFileMode_ReadMode)
-    dim = (0, 0, 0)
+    dimensions = (0, 0, 0)
     identity = True
     if image_io is not None:
         try:
             image_io.SetFileName(path)
             image_io.ReadImageInformation()
             assert image_io.GetNumberOfDimensions() == 3
-            dim = (image_io.GetDimensions(0), image_io.GetDimensions(1), image_io.GetDimensions(2))
+            dimensions = (image_io.GetDimensions(0), image_io.GetDimensions(1), image_io.GetDimensions(2))
             for d in range(2):
                 if index_of_abs_max(image_io.GetDirection(d)) != d:
                     identity = False
@@ -71,10 +72,9 @@ def get_image_dimension(path, print_non_lps=False):
                 print(f'Non-identity direction matrix: {path}')
         except RuntimeError:
             pass
-    return dim, identity
+    return dimensions, identity
 
-
-def ncanda_construct_data_frame(ncanda_root_dir):
+def construct_data_frame(root_dir):
     df = pd.DataFrame(
         [],
         columns=[
@@ -89,10 +89,12 @@ def ncanda_construct_data_frame(ncanda_root_dir):
         ],
     )
 
-    root = Path(ncanda_root_dir)
+    root = Path(root_dir)
     root_len = len(root.parts)
+    # Get a list of all files ending in .nii.gz
     for path in root.rglob('*.nii.gz'):
         file_path = str(path)
+        # Use the path to get the participant_id, series_type, and overall_qa_assessment
         participant_id = path.parts[root_len + 1]
         series_type = path.parts[-1][0:-7]
         qa = 3 if path.parts[root_len] == 'unusable' else 8
@@ -112,11 +114,13 @@ def ncanda_construct_data_frame(ncanda_root_dir):
     logger.info(f'Found {df.shape[0]} files.')
     return df
 
-
+# Uses data from the CSV to create paths to the images
 def construct_path_from_csv_fields(
     participant_id, session_id, series_type, series_number, overall_qa_assessment
 ):
+    # Subject
     sub_num = 'sub-' + str(participant_id).zfill(6)
+    # Session
     ses_num = 'ses-' + str(session_id)
     run_num = 'run-' + str(series_number).zfill(3)
     scan_type = 'PD'
@@ -170,7 +174,9 @@ def read_and_normalize_data_frame(tsv_path):
     global missing_count
     existing_count = 0
     missing_count = 0
+    # Update the DataFrame to include info on if the file exists
     df['exists'] = df.apply(lambda row: does_file_exist(row['file_path']), axis=1)
+    # Updates the DataFrame to include the dimensions of the image and whether it is oriented as lps
     df['dimensions'], df['lps'] = zip(*df['file_path'].map(get_image_dimension))
     logger.info(f'Existing files: {existing_count}, non-existent files: {missing_count}')
     return df
@@ -178,16 +184,18 @@ def read_and_normalize_data_frame(tsv_path):
 
 def verify_images(data_frame):
     problem_indices = []
+    # Iterate through the rows in the DataFrame
     for index, row in data_frame.iterrows():
         try:
-            dim, _ = get_image_dimension(row.file_path, print_non_lps=False)
-            if dim == (0, 0, 0):
+            dimensions, _ = get_image_dimension(row.file_path, print_non_lps=False)
+            if dimensions == (0, 0, 0):
                 logger.warning(f'{index}: size of {row.file_path} is zero')
                 problem_indices.append(index)
         except Exception as e:
             logger.warning(f'{index}: there is some problem with: {row.file_path}:\n{e}')
             problem_indices.append(index)
 
+    # Drops rows that are problematic in DataFrame
     data_frame.drop(problem_indices, inplace=True)
     return len(problem_indices)
 
@@ -201,6 +209,10 @@ class CombinedLoss(torch.nn.Module):
         self.focal_loss = focal_loss
         self.presence_count = binary_class_weights.shape[-1]  # indicators of presence of artifacts
 
+    # Takes in an output and target tensor, calculates the loss
+    # for each artifact, and returns a single loss value
+    # Somewhat confusingly, the output is the input
+    # The target is the target tensor
     def forward(self, output, target):
         assert output.shape == target.shape, "output & target size don't match"
         assert output.shape[-1] == regression_count + self.presence_count
@@ -236,7 +248,7 @@ def convert_bool_to_int(value: bool):
     else:  # NaN
         return -1
 
-
+# Applies ghosting artifacts to an image
 class CustomGhosting(torchio.transforms.RandomGhosting):
     def apply_transform(self, subject: torchio.Subject) -> torchio.Subject:
         original_quality = subject['info'][0]
@@ -259,7 +271,8 @@ class CustomGhosting(torchio.transforms.RandomGhosting):
 
             return transformed_subject
 
-
+# Applies random motion to an image and determins
+# how much quality was reduced by the motion.
 class CustomMotion(torchio.transforms.RandomMotion):
     def apply_transform(self, subject: torchio.Subject) -> torchio.Subject:
         original_quality = subject['info'][0]
@@ -284,7 +297,9 @@ class CustomMotion(torchio.transforms.RandomMotion):
 
             return transformed_subject
 
-
+# Applies a bias field to the image, the bias field
+# is a non-uniform intensity distribution.
+# It is only applied to low quality images, not high quality.
 class CustomBiasField(torchio.transforms.RandomBiasField):
     def apply_transform(self, subject: torchio.Subject) -> torchio.Subject:
         original_quality = subject['info'][0]
@@ -307,7 +322,7 @@ class CustomBiasField(torchio.transforms.RandomBiasField):
 
             return transformed_subject
 
-
+# Applies a spike to the image
 class CustomSpike(torchio.transforms.RandomSpike):
     def apply_transform(self, subject: torchio.Subject) -> torchio.Subject:
         original_quality = subject['info'][0]
@@ -330,7 +345,7 @@ class CustomSpike(torchio.transforms.RandomSpike):
 
             return transformed_subject
 
-
+# Corrupts images by applying a random gamma transform to them
 class CustomGamma(torchio.transforms.RandomGamma):
     def apply_transform(self, subject: torchio.Subject) -> torchio.Subject:
         original_quality = subject['info'][0]
@@ -350,7 +365,8 @@ class CustomGamma(torchio.transforms.RandomGamma):
 
             return transformed_subject
 
-
+# Applies random noise to an image and clamps the values
+# of the pixels so they are between 0 and 1
 class CustomNoise(torchio.transforms.RandomNoise):
     def apply_transform(self, subject: torchio.Subject) -> torchio.Subject:
         original_quality = subject['info'][0]
@@ -384,7 +400,9 @@ def remove_axis_code_and_its_opposite(axis_list, index):
         axis_list.pop(index - 1)  # otherwise it is the previous
     return axis_list
 
-
+# Takes in an image and returns the same image.
+# If in LPS orientation, nothing is done.
+# If not in LPS orientation, reorients image to LPS.
 class CustomReorient(
     torchio.transforms.augmentation.RandomTransform, torchio.transforms.SpatialTransform
 ):
@@ -439,7 +457,10 @@ class CustomReorient(
 
         return transformed_subject
 
-
+# Loads images into memory for training and testing.
+# Calculates the class weights which are used to weight 
+# the loss function during training.
+# Returns a dictionary of image sizes that were loaded into memory
 def create_train_and_test_data_loaders(df, count_train):
     images = []
     regression_targets = []
@@ -547,7 +568,19 @@ def create_train_and_test_data_loaders(df, count_train):
 
     return train_loader, val_loader, class_weights, sizes
 
-
+# This function trains and saves a model. It takes in a 
+# dataframe, count_train, save_path, num_epochs, val_interval, 
+# and only evaluate. The dataframe is the training set of 
+# images that will be used to train the model. Count train is 
+# the number of images in the training set. Save path is where 
+# you want to save your model after it has been trained. Num 
+# epochs is how many times you want to run through your 
+# dataset when training your model. Val interval is how 
+# often you want to validate your model during training 
+# (every x number of epochs). Only evaluate determines whether
+# or not you just want to evaluate your model on validation 
+# data without actually training it (this would be useful if 
+# you already have a pretrained model).
 def train_and_save_model(df, count_train, save_path, num_epochs, val_interval, only_evaluate):
     train_loader, val_loader, class_weights, sizes = create_train_and_test_data_loaders(
         df, count_train
@@ -657,7 +690,18 @@ def train_and_save_model(df, count_train, save_path, num_epochs, val_interval, o
     writer.close()
     return sizes
 
-
+# Takes in the following parameters: folds_prefix, 
+# validation_fold, evaluate_only, fold_count. It then reads 
+# in the csv files and verifies that all images exist. If they
+# do not exist it will drop them from the dataframe. Then it 
+# concatenates all of the dataframes into one large dataframe 
+# and prints out some information about it. Next it 
+# establishes minimum number of optimization steps and epochs 
+# based on how many images are in the dataset. Then it 
+# initializes wandb to track metrics during training and 
+# saves a model after training is complete. Finally, it 
+# prints out image size distribution for each class in the 
+# dataset.
 def process_folds(folds_prefix, validation_fold, evaluate_only, fold_count):
     logging.basicConfig(stream=sys.stdout, level=logging.INFO)
 
