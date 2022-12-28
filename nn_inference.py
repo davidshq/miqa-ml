@@ -30,7 +30,12 @@ artifact_names = {
     for artifact in artifacts
 }
 
-
+# Classifier is a neural network for classification problems
+# TiledClassifier overrides the forward() method to make it
+# work with images of any size by splitting them into tiles
+# and running each tile through the NN separately.
+# It averages all the results together to get a prediction
+# for the whole image.
 class TiledClassifier(monai.networks.nets.Classifier):
     def forward(self, inputs):
         # split the input image into tiles and run each tile through NN
@@ -76,7 +81,7 @@ class TiledClassifier(monai.networks.nets.Classifier):
         average = torch.mean(torch.stack(results), dim=0)
         return average
 
-
+# Instantiates a model for the NN
 def get_model(file_path=None):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -99,7 +104,20 @@ def get_model(file_path=None):
     return model
 
 
-# returns a 4x4 affine matrix for IJK to XYZ mapping
+# Takes an image in ITK format and returns the 
+# affine transformation matrix for that image.
+#
+# The affine transformation matrix is a 4x4 matrix that 
+# describes how to transform coordinates from one space to 
+# another.
+# 
+# Here we are transforming from LPS (left-posterior-superior) 
+# space to RAS (right-anterior-superior) space. 
+#
+# These spaces describe the orientation of the coordinate 
+# system relative to anatomical landmarks on the patient's 
+# body.
+#
 # compatible with nibabel
 #
 # code taken from TorchIO and simplified
@@ -119,7 +137,8 @@ def get_ras_affine_from_itk(itk_image) -> np.ndarray:
     affine[:3, 3] = translation_ras
     return affine
 
-
+# Takes in an affine matrix and returns the origin, spacing, 
+# and direction of the image.
 # compatible with nibabel and TorchIO
 def get_itk_metadata_from_ras_affine(affine: np.ndarray):
     # From https://github.com/nipy/nibabel/blob/master/nibabel/orientations.py
@@ -134,7 +153,9 @@ def get_itk_metadata_from_ras_affine(affine: np.ndarray):
 
     return origin_lps, spacing, direction_lps
 
-
+# Takes in an image and returns the same image with different 
+# metadata. The metadata is used to describe the origin, 
+# spacing, and direction of the image.
 def get_itk_image_view_from_torchio_image(img):
     np_array = img.data
     assert np_array.shape[0] == 1  # we are dealing with scalar images
@@ -154,7 +175,10 @@ def get_itk_image_view_from_torchio_image(img):
 
     return itk_np_view
 
-
+# Takes an image and converts it to a torchio image. It does 
+# this by converting the image to a numpy array, adding a 
+# channel dimension, and then creating a ScalarImage object 
+# from that array.
 def get_torchio_image_from_itk_image(image):
     np_array = itk.array_from_image(image)
     np_array = np.expand_dims(np_array, 0)  # add channel dimension
@@ -165,7 +189,12 @@ def get_torchio_image_from_itk_image(image):
     )
     return img
 
-
+# This is a class that inherits from torchio.transforms.RescaleIntensity
+# and overrides the apply_transform() method to add an 
+# additional step of reorienting the image into DICOM LPS 
+# (left-posterior-superior) orientation. It does this by using
+# ITK's OrientImageFilter to change the direction of the image,
+# then updates the pixel data if necessary.
 class ReorientAndRescale(torchio.transforms.RescaleIntensity):
     def apply_transform(self, subject: torchio.Subject) -> torchio.Subject:
         # rescaling intensity first gives us a copy of the data
@@ -266,7 +295,12 @@ def evaluate_model(model, data_loader, device, writer, epoch, run_name):
         else:
             return y_all
 
-
+# Takes in a result and returns a dictionary of labeled 
+# results. The overall quality is the first value in the 
+# result divided by 10.0 and clamped between 0.0 and 1.0. The 
+# rest of the values are artifacts, which are also clamped 
+# between 0.0 and 1.0, but if they are not normal variants or 
+# full brain coverage, then they are negated (1 - value).
 def label_results(result):
     labeled_results = {'overall_quality': clamp(result[0] / 10.0, 0.0, 1.0)}
     for artifact_name, value in zip(artifacts, result[regression_count:]):
@@ -278,7 +312,8 @@ def label_results(result):
         labeled_results[result_name] = result_value
     return labeled_results
 
-
+# Takes in a model and image path and returns predicted
+# quality of the image.
 def evaluate1(model, image_path):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     rescale = ReorientAndRescale(out_min_max=(0, 1))
@@ -305,7 +340,10 @@ def evaluate1(model, image_path):
 
     return label_results(result)
 
-
+# evaluates the model on many images. 
+# It takes in a model and a list of image paths, and returns 
+# a dictionary with the image paths as keys and the results of
+# evaluating the model on those images as values.
 def evaluate_many(model, image_paths):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu') # Line 283
 
