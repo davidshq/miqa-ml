@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
 
+# Reads in a csv file, calculates the correlation between each 
+# column and saves it to another csv file. It also calculates 
+# confusion matrices for two columns and saves them to csv files.
 import pandas as pd
 from sklearn.metrics import confusion_matrix
 
 
-# This is a python script that reads in a csv file, 
-# calculates the correlation between each column and saves it
-# to another csv file. It also calculates confusion matrices 
-# for two columns and saves them to csv files.
 df = pd.read_csv('M:/MIQA/data.csv')  # manually converted TRUE/FALSE into 1/0
 print(f'count NaN: {df.isnull().sum().sum()}')
 correlation_df = df.corr()
